@@ -13,7 +13,7 @@ const NAV = [
 
 function LoginScreen() {
   const { signIn, data } = useCrm();
-  const [email, setEmail] = useState("arjun@harborview.in");
+  const [email, setEmail] = useState("arjun@manjugroups.in");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -53,7 +53,7 @@ function LoginScreen() {
           className="field mt-1.5"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="name@harborview.in"
+          placeholder="name@manjugroups.in"
           autoComplete="email"
         />
         {err && <p className="mt-2 text-[12px] text-danger">{err}</p>}

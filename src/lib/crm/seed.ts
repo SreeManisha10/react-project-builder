@@ -18,9 +18,9 @@ const iso = (offset: number) => {
  */
 export const seed: CrmData = {
   users: [
-    { id: "u1", name: "Arjun Rao", email: "arjun@harborview.in", role: "Admin" },
-    { id: "u2", name: "Meera Krishnan", email: "meera@harborview.in", role: "Sales Employee" },
-    { id: "u3", name: "Sahil Verma", email: "sahil@harborview.in", role: "Sales Employee" },
+    { id: "u1", name: "Arjun Rao", email: "arjun@manjugroups.in", role: "Admin" },
+    { id: "u2", name: "Meera Krishnan", email: "meera@manjugroups.in", role: "Sales Employee" },
+    { id: "u3", name: "Sahil Verma", email: "sahil@manjugroups.in", role: "Sales Employee" },
   ],
   projects: [
     { id: "p1", name: "Skyline Residency", location: "Bandra West" },
