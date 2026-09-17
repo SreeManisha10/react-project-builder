@@ -1,133 +1,163 @@
 /**
- * Mock API layer (frontend-only phase).
+ * API layer — the ONLY place in the app that knows about HTTP.
  *
- * Every function here returns a Promise and is the ONLY place that knows where
- * data comes from. When the backend is ready, replace the bodies with
- * `fetch("/api/leads")` etc. — components and hooks stay untouched.
+ * Every function below is a thin, typed wrapper around one REST endpoint,
+ * called with axios (src/lib/crm/http.ts) against the routes declared in
+ * src/lib/crm/endpoints.ts. Components and hooks never import axios.
+ *
+ * Mutations return a fresh snapshot so the UI always renders server truth
+ * rather than a locally patched guess.
  */
-import { seed } from "./seed";
-import type { Booking, CrmData, Lead, LeadStage, Note, User } from "./types";
+import { endpoints } from "./endpoints";
+import { http, setAuthToken } from "./http";
+import type { Booking, Building, CrmData, Lead, LeadStage, Note, Project, Unit, UnitStatus, User } from "./types";
 
-const STORAGE_KEY = "harborview-crm-v1";
-const LATENCY = 350;
+export { ApiError } from "./http";
 
-function delay<T>(value: T): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), LATENCY));
+interface ListResponse<T> {
+  items: T[];
+}
+interface PagedResponse<T> extends ListResponse<T> {
+  page: number;
+  pageSize: number;
+  total: number;
 }
 
-function read(): CrmData {
-  if (typeof window === "undefined") return structuredClone(seed);
+/* ---------------------------------- auth ---------------------------------- */
+
+/** POST /auth/login  →  { token, user } */
+export async function login(email: string): Promise<User> {
+  const { data } = await http.post<{ token: string; user: User }>(endpoints.auth.login(), { email });
+  setAuthToken(data.token);
+  return data.user;
+}
+
+/** GET /auth/me  →  User */
+export async function me(): Promise<User> {
+  const { data } = await http.get<User>(endpoints.auth.me());
+  return data;
+}
+
+/** POST /auth/logout */
+export async function logout(): Promise<void> {
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as CrmData;
-  } catch {
-    /* corrupted storage — fall back to seed */
+    await http.post(endpoints.auth.logout());
+  } finally {
+    setAuthToken(null);
   }
-  const fresh = structuredClone(seed);
-  write(fresh);
-  return fresh;
 }
 
-function write(data: CrmData): void {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-}
+/* -------------------------------- bootstrap -------------------------------- */
 
-const uid = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
-
-export class ApiError extends Error {}
-
+/** GET /crm/snapshot  →  everything the workspace needs in one round trip. */
 export async function fetchAll(): Promise<CrmData> {
-  return delay(read());
+  const { data } = await http.get<CrmData>(endpoints.snapshot());
+  return data;
 }
 
-export async function resetData(): Promise<CrmData> {
-  const fresh = structuredClone(seed);
-  write(fresh);
-  return delay(fresh);
+/** GET /dashboard/summary  →  aggregated KPI counters. */
+export async function fetchDashboard() {
+  const { data } = await http.get(endpoints.dashboard.summary());
+  return data;
 }
+
+/* ---------------------------------- leads --------------------------------- */
 
 export type LeadInput = Omit<Lead, "id" | "createdAt">;
 
+export interface LeadQuery {
+  query?: string;
+  stage?: LeadStage | "all";
+  assigneeId?: string | "all";
+  page?: number;
+  pageSize?: number;
+}
+
+/** GET /leads?query=&stage=&assigneeId=&page=&pageSize= */
+export async function listLeads(params: LeadQuery = {}): Promise<PagedResponse<Lead>> {
+  const { data } = await http.get<PagedResponse<Lead>>(endpoints.leads.list(), { params });
+  return data;
+}
+
+/** GET /leads/:id  →  lead with its notes */
+export async function getLead(id: string): Promise<Lead & { notes: Note[] }> {
+  const { data } = await http.get<Lead & { notes: Note[] }>(endpoints.leads.detail(id));
+  return data;
+}
+
+/** POST /leads  →  created lead, then a fresh snapshot */
 export async function createLead(input: LeadInput): Promise<CrmData> {
-  const data = read();
-  const duplicate = data.leads.find((l) => l.phone.replace(/\s/g, "") === input.phone.replace(/\s/g, ""));
-  if (duplicate) throw new ApiError(`A lead with this phone already exists (${duplicate.name}).`);
-  data.leads.unshift({ ...input, id: uid("l"), createdAt: new Date().toISOString() });
-  write(data);
-  return delay(data);
+  await http.post<Lead>(endpoints.leads.create(), input);
+  return fetchAll();
 }
 
+/** PATCH /leads/:id */
 export async function updateLead(id: string, patch: Partial<Lead>): Promise<CrmData> {
-  const data = read();
-  const lead = data.leads.find((l) => l.id === id);
-  if (!lead) throw new ApiError("Lead not found.");
-  if (patch.stage === "Booked" && !data.bookings.some((b) => b.leadId === id)) {
-    throw new ApiError("Create a booking to move this lead to Booked.");
-  }
-  Object.assign(lead, patch);
-  write(data);
-  return delay(data);
+  await http.patch<Lead>(endpoints.leads.update(id), patch);
+  return fetchAll();
 }
 
-export async function addNote(leadId: string, authorId: string, body: string): Promise<CrmData> {
-  const trimmed = body.trim();
-  if (!trimmed) throw new ApiError("Note cannot be empty.");
-  const data = read();
-  const note: Note = { id: uid("n"), leadId, authorId, body: trimmed, createdAt: new Date().toISOString() };
-  data.notes.unshift(note);
-  write(data);
-  return delay(data);
+/** DELETE /leads/:id (Admin only) */
+export async function deleteLead(id: string): Promise<CrmData> {
+  await http.delete(endpoints.leads.remove(id));
+  return fetchAll();
+}
+
+/** POST /leads/:id/notes */
+export async function addNote(leadId: string, _authorId: string, body: string): Promise<CrmData> {
+  await http.post<Note>(endpoints.leads.notes(leadId), { body });
+  return fetchAll();
+}
+
+/* -------------------------------- properties ------------------------------- */
+
+/** GET /projects */
+export async function listProjects(): Promise<Project[]> {
+  const { data } = await http.get<ListResponse<Project>>(endpoints.properties.projects());
+  return data.items;
+}
+
+/** GET /buildings?projectId= */
+export async function listBuildings(projectId?: string): Promise<Building[]> {
+  const { data } = await http.get<ListResponse<Building>>(endpoints.properties.buildings(), {
+    params: projectId ? { projectId } : undefined,
+  });
+  return data.items;
+}
+
+/** GET /units?status=&buildingId= */
+export async function listUnits(params: { status?: UnitStatus | "all"; buildingId?: string } = {}): Promise<Unit[]> {
+  const { data } = await http.get<ListResponse<Unit>>(endpoints.properties.units(), { params });
+  return data.items;
+}
+
+/* --------------------------------- bookings -------------------------------- */
+
+/** GET /bookings */
+export async function listBookings(): Promise<Booking[]> {
+  const { data } = await http.get<ListResponse<Booking>>(endpoints.bookings.list());
+  return data.items;
 }
 
 /**
- * Booking flow. The unit availability check happens against freshly read
- * storage, which is the frontend stand-in for the DB unique constraint +
- * transaction that will prevent two users booking the same unit.
+ * POST /bookings — the double-booking guard lives on the server; a second
+ * attempt on the same unit comes back as 409 conflict.
  */
-export async function createBooking(leadId: string, unitId: string, agentId: string): Promise<CrmData> {
-  const data = read();
-  const unit = data.units.find((u) => u.id === unitId);
-  const lead = data.leads.find((l) => l.id === leadId);
-  if (!unit || !lead) throw new ApiError("Lead or unit not found.");
-  if (unit.status === "Sold" || data.bookings.some((b) => b.unitId === unitId)) {
-    throw new ApiError(`Unit ${unit.code} is already booked by another agent.`);
-  }
-  if (lead.stage === "Lost") throw new ApiError("A lost lead cannot be booked. Reopen it first.");
-
-  const booking: Booking = {
-    id: uid("bk"),
-    leadId,
-    unitId,
-    agentId,
-    amount: unit.price,
-    createdAt: new Date().toISOString(),
-  };
-  data.bookings.unshift(booking);
-  unit.status = "Sold";
-  lead.stage = "Booked";
-  lead.interestedUnitId = unitId;
-  lead.followUpDate = null;
-  write(data);
-  return delay(data);
+export async function createBooking(leadId: string, unitId: string, _agentId: string): Promise<CrmData> {
+  await http.post<Booking>(endpoints.bookings.create(), { leadId, unitId });
+  return fetchAll();
 }
 
+/** DELETE /bookings/:id (Admin only) — releases the unit back to Available. */
 export async function cancelBooking(bookingId: string, stage: LeadStage = "Negotiation"): Promise<CrmData> {
-  const data = read();
-  const idx = data.bookings.findIndex((b) => b.id === bookingId);
-  if (idx === -1) throw new ApiError("Booking not found.");
-  const [booking] = data.bookings.splice(idx, 1);
-  const unit = data.units.find((u) => u.id === booking.unitId);
-  if (unit) unit.status = "Available";
-  const lead = data.leads.find((l) => l.id === booking.leadId);
-  if (lead) lead.stage = stage;
-  write(data);
-  return delay(data);
+  await http.delete(endpoints.bookings.cancel(bookingId), { data: { stage } });
+  return fetchAll();
 }
 
-export async function login(email: string): Promise<User> {
-  const data = read();
-  const user = data.users.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
-  if (!user) throw new ApiError("No account found for that email.");
-  return delay(user);
+/* ----------------------------------- demo ---------------------------------- */
+
+/** POST /demo/reset */
+export async function resetData(): Promise<CrmData> {
+  const { data } = await http.post<CrmData>(endpoints.demo.reset());
+  return data;
 }
